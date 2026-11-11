@@ -28,6 +28,13 @@ else:
     _NODES.append(LTXVAddFrameGuides)
 
 try:
+    from .guidance_reroute import LTXGuidanceReroute
+except ImportError as e:
+    LOG.error("LTX Guidance Reroute is unavailable: %s", e)
+else:
+    _NODES.append(LTXGuidanceReroute)
+
+try:
     from .mask_block_pooling import LTXVPoolMaskBlocks
 except ImportError as e:
     LOG.error("LTXV Pool Mask Blocks is unavailable: %s", e)

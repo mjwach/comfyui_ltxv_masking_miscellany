@@ -99,6 +99,14 @@ Things that don't work:
 - **The full-length `masks` output** with LTXV Set Video Latent Noise Masks: it
   would take the first video frames as if they were latent frames.
 
+### LTX Guidance Reroute
+
+*Category: mask/ltxv. File: `guidance_reroute.py`*
+
+Passes three values through unchanged: `images` (IMAGE), `masks` (MASK) and
+`guides` (STRING), each to the output of the same name and type. No input is
+required; an unconnected input comes out as None. It does nothing else.
+
 ### LTXV Add Frame Guides
 
 *Category: conditioning/ltxv. File: `frame_guides.py`*
