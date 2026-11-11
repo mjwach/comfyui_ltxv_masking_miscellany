@@ -147,6 +147,55 @@ Unknown keys, missing required keys and non-boolean values are errors.
 Outputs: `positive`, `negative`, `latent`, and `plan`, a text summary of the
 guides that were added.
 
+### Build Patching Mask
+
+*Category: mask/ltxv. File: `build_patching_mask.py`*
+
+Plans where a patch (a stretch of frames to regenerate) goes in a video, and
+picks a working section of the video around it. The working section comes out
+as a DICT shaped like a VideoToExtend from the
+[comfyui_video_to_extend](https://github.com/mjwach/comfyui_video_to_extend)
+pack, so it can go straight into that pack's nodes; this pack doesn't depend
+on it.
+
+| Input | Description |
+|---|---|
+| `video` | A video in ComfyUI's input folder, with an upload button (the same list as VideoHelperSuite's Load Video (Upload)). |
+| `patch_start` | First frame of the patch, counted from the start of the whole video. |
+| `patch_length` | Number of frames in the patch (at least 1). |
+| `patch_padding` | Frames added to each end of the patch before anything else happens: start 35, length 3, padding 4 is exactly the same as start 31, length 11, padding 0. |
+| `working_size` | Length of the working section, default 5. |
+| `working_size_unit` | `seconds` (default; multiplied by the video's frame rate) or `frames`. |
+
+| Output | Description |
+|---|---|
+| `vte` | DICT with `video_file`, `is_null` (false), `prefix_to_sustain` and `working_frame_count`. |
+| `patch_start` | First frame of the patch, counted from the start of the working frames. |
+| `patch_length` | Frames in the patch. |
+
+How the numbers are chosen:
+
+- **Working frame count:** `working_size` in frames, moved to the nearest
+  8n+1 count (halfway rounds up). If that's longer than the video, the next
+  smaller 8n+1 count is used if it fits; otherwise it's an error.
+- **Patch:** the smallest run of whole latent frames of the working set (as
+  LTX's VAE would group them if the working frames were encoded: frame 0
+  alone, then groups of 8) that holds the padded patch, with the padded patch
+  about centered in it. So `patch_start` is always 8k+1 and `patch_length` a
+  multiple of 8.
+- **Prefix:** any length, chosen so the patch sits as near the middle of the
+  working section as the video allows. There's always at least one latent
+  frame of the working section before the patch and one after it.
+- If no placement fits (the patch is too close to the start or end of the
+  video, or too long for the working section), one more latent frame of
+  patch length is tried, which gives more freedom of placement; if that fails
+  too, it's an error.
+
+Errors stop the workflow when it's queued, before anything runs, as long as
+the widgets hold values rather than links (linked values are checked when the
+node runs). Frames are counted the same way comfyui_video_to_extend counts
+them, so the two packs agree on a video's length.
+
 ## License
 
 Public domain (The Unlicense). See `LICENSE`.

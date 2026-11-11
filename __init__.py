@@ -34,6 +34,13 @@ except ImportError as e:
 else:
     _NODES.append(LTXVPoolMaskBlocks)
 
+try:
+    from .build_patching_mask import BuildPatchingMask
+except ImportError as e:
+    LOG.error("Build Patching Mask is unavailable: %s", e)
+else:
+    _NODES.append(BuildPatchingMask)
+
 
 class _Extension(ComfyExtension):
     async def get_node_list(self):
