@@ -550,14 +550,15 @@ class ConfigureMaskAndReferenceGuideVideos(io.ComfyNode):
                     "mask_color",
                     optional=True,
                     force_input=True,
-                    tooltip="0xRRGGBB (e.g. Color to RGB Int's rgb_int). Default magenta "
+                    tooltip="0xRRGGBB (compatible with Color Picker's rgb_int output). Default magenta "
                             "(255, 0, 255).",
                 ),
                 io.Int.Input(
                     "zone_color",
                     optional=True,
                     force_input=True,
-                    tooltip="0xRRGGBB. Default chroma green (0, 255, 0).",
+                    tooltip="0xRRGGBB (compatible with Color Picker's rgb_int output). Default chroma green "
+                            "(0, 255, 0).",
                 ),
                 io.Boolean.Input(
                     "auto_resize",
