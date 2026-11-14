@@ -48,6 +48,17 @@ except ImportError as e:
 else:
     _NODES.append(BuildPatchingMask)
 
+try:
+    from .mask_reference_guide import (
+        BuildMaskAndReferenceGuideVideo,
+        ConfigureMaskAndReferenceGuideVideos,
+    )
+except ImportError as e:
+    LOG.error("Mask and Reference Guide Video nodes are unavailable: %s", e)
+else:
+    _NODES.append(ConfigureMaskAndReferenceGuideVideos)
+    _NODES.append(BuildMaskAndReferenceGuideVideo)
+
 
 class _Extension(ComfyExtension):
     async def get_node_list(self):

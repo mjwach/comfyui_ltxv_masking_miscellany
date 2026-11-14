@@ -204,6 +204,91 @@ the widgets hold values rather than links (linked values are checked when the
 node runs). Frames are counted the same way comfyui_video_to_extend counts
 them, so the two packs agree on a video's length.
 
+### Configure Mask and Reference Guide Videos / Build Mask and Reference Guide Video
+
+*Category: mask/ltxv. File: `mask_reference_guide.py`*
+
+Build guide videos in the layout used by Alissonerdx's `ltx23_inpaint_masked_r2v`,
+a reference-based inpainting LoRA (this is also the layout BFSNodes'
+Reserved Region Frame Composer makes): a strip along one side of the frame
+filled with chroma green, with the reference image on a white card in it, and
+the rest of the frame holding the video scaled to fit, with black bars where
+it doesn't fill the space and the masked area painted solid magenta. Pass the
+result to LTXVAddGuideMulti as the LoRA's documentation describes.
+
+**Configure Mask and Reference Guide Videos** makes a configuration that any
+number of Build nodes can share (for example the guides of both stages of a
+two-stage workflow).
+
+| Input | Description |
+|---|---|
+| `reference_image` | The object to insert: a single image. |
+| `reference_alpha` | Optional MASK, 1 = object, 0 = background. If not connected, `reference_image` must have an alpha channel. Load Image's MASK output is *inverted* alpha; put Invert Mask in between. |
+| `mask_color`, `zone_color` | Optional INT, 0xRRGGBB (the `rgb_int` output of Color to RGB Int). Defaults: magenta (255, 0, 255) and chroma green (0, 255, 0). They must differ. |
+| `auto_resize` | Default off. Grow the frame, in 32 px steps and keeping the video's aspect ratio, so the video keeps its full resolution beside the zone (see below). |
+| `zone_location` | `left` (default), `right`, `top`, `bottom`, or a pair of sides meeting at a corner with one preferred, e.g. `left or top (left preferred)`. |
+| `target_thickness`, `min_thickness`, `max_thickness` | Zone thickness, default 256 each. Without auto-resize the thickness is the target clamped to [min, max]; min > max is an error. Auto-resize uses only multiples of 32 within [min, max] (or the clamped target if there are none), preferring those near the target. |
+| `allow_rotation` | Default off. Allow turning the reference a quarter turn when that shows it substantially larger. |
+| `rotate_ccw` | Default on: rotation is counterclockwise; off: clockwise. |
+| `max_pixels` | Default -1 (no limit). Largest frame (width × height) auto-resize may grow to. It never makes a frame smaller than the input; 0 effectively turns auto-resize off. |
+
+**Build Mask and Reference Guide Video**
+
+| Input | Description |
+|---|---|
+| `video_images` | The video frames. |
+| `video_masks` | One mask per frame, or a single mask for every frame, the same size as the frames; 1 = regenerate. |
+| `configuration` | From Configure Mask and Reference Guide Videos. |
+| `pool_mask_blocks` | Default on. After layout, pool the mask to LTX latent blocks exactly as LTXV Pool Mask Blocks does with `max` (32×32 px on the final frame's grid; frame 0, then groups of 8 frames), clipped to the video's rectangle. |
+
+| Output | Description |
+|---|---|
+| `guide_images` | The laid-out guide video. |
+| `resized` | True if auto-resize changed the frame size. |
+| `report` | Text: the candidate layouts, their scores, and what was chosen. |
+
+With the defaults, the geometry (zone, video and card rectangles) is the same
+as Reserved Region Frame Composer's with region left, 256 px, scale 90%,
+padding 12, centered. Differences:
+
+- The reference is composited onto white with its alpha and **cropped to the
+  bounding box of its visible pixels** before the 16 px white border is added,
+  so the object fills more of the card. A fully transparent reference gives a
+  blank white card, which the LoRA treats as "no reference" (text-only
+  inpainting).
+- The mask is never Lanczos-resampled: it's area-averaged to the video's new
+  size and thresholded at 0.5, so the painted area is solid with clean edges.
+- Video frames are resampled (Lanczos) in floating point, and copied 1:1 when
+  their size doesn't change.
+
+How the layout is chosen. The LoRA turns the video area of the guide into the
+whole output frame, and in training the two always had the same aspect ratio:
+the video was shrunk uniformly to fit beside the zone, with black bars above
+and below. Every layout here keeps that.
+
+- Without auto-resize, the frame is the input's size and the thickness is the
+  clamped target.
+- With auto-resize, the frame grows in 32 px steps (within `max_pixels`, and
+  never giving the video less room than the input's own frame size would) to
+  hold the video at full resolution or slightly more, with a thickness that's
+  a multiple of 32 so the zone's edge is on a latent-cell boundary, as in
+  training. The frame's aspect ratio matches the video's as closely as 32 px
+  steps allow; the small mismatch left over (usually under 1%) means the
+  output comes out stretched by that much. 1280×720 becomes 1536×864 with the
+  video at 1280×720 and 72 px bars, exactly. Resize the sampled output back to
+  the input's size; the report gives the factors and the aspect error.
+
+Then each allowed side, with and without rotation, is scored: video detail
+kept (most weight), reference detail kept, a small bonus for the preferred
+side (a tiebreaker) and a penalty for rotation. The weights are constants at
+the top of `mask_reference_guide.py`.
+
+Errors (wrong shapes or sizes, mismatched frame counts, a missing alpha, equal
+colors, min > max, no room for the video) stop the workflow before anything is
+drawn. The report warns when the frame or the zone thickness isn't a multiple
+of 32 (without auto-resize, the input's size and the target are used as
+given) or the frame count isn't 8n+1.
+
 ## License
 
 Public domain (The Unlicense). See `LICENSE`.
