@@ -26,13 +26,17 @@ padding, 16 px white border around the reference). Differences from it:
     added, so the object fills more of the card. A reference with no
     non-transparent pixels gives a blank white card ("no reference" mode).
   - The card is fully opaque (no faint zone color at soft edges).
-  - The mask is never Lanczos-resampled: it's area-averaged to the video's
-    new size and thresholded at 0.5, so the painted area is solid with clean
+  - The mask is never Lanczos-resampled: it's scaled to the video's new size
+    with filters that can't ring (area-weighted when shrinking, bilinear when
+    growing; see image_scaling.py) and thresholded at 0.5, so the painted
+    area is solid with clean
     edges, and it can be pooled to LTX's 32x32 / 8-frame latent blocks
     (exactly as LTXV Pool Mask Blocks with "max" does) on the final canvas
     grid. Pooled blocks are clipped to the video's rectangle.
   - Video frames are resampled in floating point (no 8-bit rounding), and not
     resampled at all when they keep their size.
+  - With halve_dimensions_first, the layout is planned for the halved size,
+    but frames and masks are scaled from their real size in one step.
 
 The LoRA turns the video area of the guide into the whole output frame. In
 training the two always had the same aspect ratio (the video was shrunk
@@ -55,10 +59,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from PIL import Image
 
 from comfy_api.latest import io
 
+from .image_scaling import MASK_THRESHOLD, halved, scale_image_array, scale_mask_array
 from .mask_block_pooling import pool_mask_blocks
 
 CONFIG_TYPE_NAME = "LTXV_MASK_REF_GUIDE_CONFIG"
@@ -72,8 +76,6 @@ CARD_BORDER_SOURCE_PX = 16   # white border, in reference-image pixels
 ZONE_PADDING_PX = 12         # space between the zone's edges and the card box
 CARD_SCALE = 0.90            # the card fits inside 90% of the padded zone
 
-# Mask threshold after area-resampling to the video's new size.
-MASK_THRESHOLD = 0.5
 # A reference pixel counts as part of the object if its alpha exceeds this.
 ALPHA_CROP_THRESHOLD = 1.0 / 255.0
 
@@ -452,23 +454,12 @@ def plan_layout(src_w, src_h, cfg):
 # Rendering
 # ---------------------------------------------------------------------------
 
-def _resize_float(plane, size, resample):
-    """Resize a 2-D float32 array to size=(w, h) with PIL in float mode."""
-    img = Image.fromarray(np.ascontiguousarray(plane, dtype=np.float32), mode="F")
-    return np.asarray(img.resize(size, resample), dtype=np.float32)
-
-
 def resize_rgb(rgb, size):
-    if (rgb.shape[1], rgb.shape[0]) == tuple(size):
-        return rgb
-    out = np.stack([_resize_float(rgb[..., k], size, Image.LANCZOS) for k in range(3)], axis=-1)
-    return np.clip(out, 0.0, 1.0)
+    return scale_image_array(rgb, size)
 
 
 def resize_mask(mask, size):
-    if (mask.shape[1], mask.shape[0]) != tuple(size):
-        mask = _resize_float(mask, size, Image.BOX)
-    return (mask >= MASK_THRESHOLD).astype(np.float32)
+    return scale_mask_array(mask, size, threshold=True)
 
 
 def render(images, masks, layout, cfg, pool):
@@ -665,25 +656,36 @@ class BuildMaskAndReferenceGuideVideo(io.ComfyNode):
                             "final frame's grid, frame 0 then groups of 8 frames) with max, "
                             "exactly as LTXV Pool Mask Blocks does, clipped to the video area.",
                 ),
+                io.Boolean.Input(
+                    "halve_dimensions_first",
+                    default=False,
+                    tooltip="Treat the inputs as twice the size they should be: lay out the "
+                            "guide as if they had been halved first (odd sizes round up), as "
+                            "LTXV Halve Dimensions does, but scale the frames and masks in one "
+                            "step, so nothing is lost to halving and then enlarging again.",
+                ),
             ],
             outputs=[
                 io.Image.Output(display_name="guide_images"),
-                io.Boolean.Output(display_name="resized",
-                                  tooltip="True if auto_resize changed the frame size."),
+                io.Boolean.Output(display_name="auto-resized",
+                                  tooltip="True if auto_resize changed the frame size (from the "
+                                          "halved size, with halve_dimensions_first)."),
                 io.String.Output(display_name="report",
                                  tooltip="What the node decided and why."),
             ],
         )
 
     @classmethod
-    def execute(cls, video_images, video_masks, configuration, pool_mask_blocks) -> io.NodeOutput:
+    def execute(cls, video_images, video_masks, configuration, pool_mask_blocks,
+                halve_dimensions_first=False) -> io.NodeOutput:
         try:
-            return cls._run(video_images, video_masks, configuration, pool_mask_blocks)
+            return cls._run(video_images, video_masks, configuration, pool_mask_blocks,
+                            bool(halve_dimensions_first))
         except ValueError as e:
             raise ValueError(f"Build Mask and Reference Guide Video: {e}") from None
 
     @classmethod
-    def _run(cls, video_images, video_masks, cfg, pool):
+    def _run(cls, video_images, video_masks, cfg, pool, halve=False):
         if not isinstance(cfg, GuideConfig):
             raise ValueError("configuration must come from Configure Mask and Reference Guide Videos.")
         if video_images is None or video_images.ndim != 4:
@@ -706,9 +708,13 @@ class BuildMaskAndReferenceGuideVideo(io.ComfyNode):
             raise ValueError(f"{masks.shape[0]} masks for {n} frames; give one per frame or a "
                              "single mask for all.")
 
-        layout, plan_lines = plan_layout(w, h, cfg)
+        # With halve_dimensions_first, plan as if the input were halved (sw x sh);
+        # the frames are still scaled from their real size, in one step.
+        sw, sh = halved(w, h) if halve else (w, h)
+        layout, plan_lines = plan_layout(sw, sh, cfg)
 
-        report = [f"Input: {n} frames, {w}x{h}."]
+        report = [f"Input: {n} frames, {w}x{h}"
+                  + (f"; halve_dimensions_first, so laid out as {sw}x{sh}." if halve else ".")]
         if masks.shape[0] == 1 and n > 1:
             report.append("One mask given; used for every frame.")
         report.append(f"Reference: {cfg.card_note}.")
@@ -726,19 +732,25 @@ class BuildMaskAndReferenceGuideVideo(io.ComfyNode):
         L = layout
         report.append(
             f"Chosen: zone on the {L.side}, {L.thickness} px thick; frame {L.width}x{L.height}"
-            + (f" (auto-resized from {w}x{h})" if L.resized else " (original size)") + ".")
+            + (f" (auto-resized from {sw}x{sh})" if L.resized
+               else " (halved size)" if halve else " (original size)") + ".")
         report.append(
             f"Video: {L.video[2]}x{L.video[3]} at ({L.video[0]}, {L.video[1]}), scale "
-            f"{L.video_scale:.4f} ({100 * min(L.video_scale, 1) ** 2:.1f}% of source pixels"
-            + (", copied 1:1" if (L.video[2], L.video[3]) == (w, h) else "") + ").")
+            f"{L.video_scale:.4f}" + (" of the halved size" if halve else "")
+            + f" ({100 * min(L.video_scale, 1) ** 2:.1f}% of "
+            + ("halved " if halve else "") + "source pixels"
+            + (", copied 1:1" if (L.video[2], L.video[3]) == (w, h) else "")
+            + (f"; scaled from {w}x{h} in one step by x {L.video[2] / w:.4f}, "
+               f"y {L.video[3] / h:.4f}" if halve else "") + ").")
         report.append(
             f"Card: {L.card[2]}x{L.card[3]} at ({L.card[0]}, {L.card[1]}), scale "
             f"{L.card_scale:.4f}, rotation {L.rotation}.")
         if L.resized:
             report.append(
                 f"Output: the sampled video will be {L.width}x{L.height} with the video filling "
-                f"the whole frame; resize it to {w}x{h} (x {w / L.width:.4f}, "
-                f"y {h / L.height:.4f}) to match the input"
+                f"the whole frame; resize it to {sw}x{sh} (x {sw / L.width:.4f}, "
+                f"y {sh / L.height:.4f}) to match the "
+                + ("halved input" if halve else "input")
                 + (f". Its aspect ratio is off by {100 * L.warp:+.2f}%, which that resize undoes."
                    if abs(L.warp) > 1e-9 else "; aspect ratio exact."))
 
@@ -757,7 +769,8 @@ class BuildMaskAndReferenceGuideVideo(io.ComfyNode):
         masks_np = masks.detach().cpu().float().numpy().clip(0.0, 1.0)
         out, masked = render(images_np, masks_np, layout, cfg, bool(pool))
         report.append(
-            f"Mask: area-resampled and thresholded at {MASK_THRESHOLD}"
+            f"Mask: scaled (area-weighted when shrinking, bilinear when growing) and "
+            f"thresholded at {MASK_THRESHOLD}"
             + (", pooled to 32x32 px / 8-frame latent blocks (max) and clipped to the video area"
                if pool else ", not pooled")
             + f"; {100 * masked:.1f}% of all frame pixels painted.")

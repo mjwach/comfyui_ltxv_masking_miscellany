@@ -240,11 +240,12 @@ two-stage workflow).
 | `video_masks` | One mask per frame, or a single mask for every frame, the same size as the frames; 1 = regenerate. |
 | `configuration` | From Configure Mask and Reference Guide Videos. |
 | `pool_mask_blocks` | Default on. After layout, pool the mask to LTX latent blocks exactly as LTXV Pool Mask Blocks does with `max` (32×32 px on the final frame's grid; frame 0, then groups of 8 frames), clipped to the video's rectangle. |
+| `halve_dimensions_first` | Default off. Treat the inputs as twice the size they should be: lay the guide out as if they had first gone through LTXV Halve Dimensions (odd sizes round up), but scale the frames and masks from their real size in one step. With auto-resize, this keeps detail that halving and then enlarging would lose. Halving followed by this node gives about the same result, a little softer; identical when auto-resize copies the halved video 1:1. |
 
 | Output | Description |
 |---|---|
 | `guide_images` | The laid-out guide video. |
-| `resized` | True if auto-resize changed the frame size. |
+| `auto-resized` | True if auto-resize changed the frame size. With `halve_dimensions_first`, compared with the halved size, so halving alone doesn't count. |
 | `report` | Text: the candidate layouts, their scores, and what was chosen. |
 
 With the defaults, the geometry (zone, video and card rectangles) is the same
@@ -256,10 +257,11 @@ padding 12, centered. Differences:
   so the object fills more of the card. A fully transparent reference gives a
   blank white card, which the LoRA treats as "no reference" (text-only
   inpainting).
-- The mask is never Lanczos-resampled: it's area-averaged to the video's new
-  size and thresholded at 0.5, so the painted area is solid with clean edges.
-- Video frames are resampled (Lanczos) in floating point, and copied 1:1 when
-  their size doesn't change.
+- The mask is never Lanczos-resampled: it's scaled with filters that can't
+  ring (see LTXV Halve Dimensions / Match Image Size) and thresholded at
+  0.5, so the painted area is solid with clean edges.
+- Video frames are scaled in floating point with the same shared code, and
+  copied 1:1 when their size doesn't change.
 
 How the layout is chosen. The LoRA turns the video area of the guide into the
 whole output frame, and in training the two always had the same aspect ratio:
@@ -288,6 +290,54 @@ colors, min > max, no room for the video) stop the workflow before anything is
 drawn. The report warns when the frame or the zone thickness isn't a multiple
 of 32 (without auto-resize, the input's size and the target are used as
 given) or the frame count isn't 8n+1.
+
+### LTXV Halve Dimensions / Match Image Size / Match Image or Mask Size
+
+*Category: mask/ltxv. File: `image_scaling.py`*
+
+Three scaling nodes. They share their scaling code with Build Mask and Reference
+Guide Video.
+
+**LTXV Halve Dimensions** halves the width and height of `images` and `masks`
+(odd sizes round up). The two must have the same size and frame count.
+
+| Input | Description |
+|---|---|
+| `images`, `masks` | Required; same width, height and frame count. |
+| `active` | Optional BOOLEAN input (not a widget), default true. If false, the `images` and `masks` outputs are the inputs, unchanged. |
+| `force_binary_masks` | Default on. Threshold the halved masks at 0.5: values >= 0.5 become 1, the rest 0. |
+
+| Output | Description |
+|---|---|
+| `images`, `masks` | Halved (or passed through when `active` is false). |
+| `images passthrough`, `masks passthrough` | The inputs, unchanged. |
+
+**Match Image Size** scales every frame of `images` to the width and
+height of `reference`, whole frame to whole frame: no cropping or padding, so
+the aspect ratio follows `reference`. Frame counts don't need to match. If the
+sizes already match, the input is passed through untouched, so it's cheap and
+safe to leave in a workflow where it may do nothing.
+
+**Match Image or Mask Size** does the same for `images` and `masks` together,
+to the size of `reference`, which can be an image or a mask. Either `images`
+or `masks` may be left unconnected (that output is then empty), and the two
+needn't have the same size or frame count. `force_binary_masks` (default off)
+thresholds the masks at 0.5 as LTXV Halve Dimensions does; it applies even
+when the masks are already the right size. Anything that needs no change is
+passed through untouched.
+
+How scaling is done. The filter is chosen separately for each axis from that
+axis's scale factor, everything in 32-bit float (no 8-bit rounding):
+
+| | Shrinking by a whole number (2×, 3×…) | Shrinking otherwise | Growing |
+|---|---|---|---|
+| Images | box (block average) | Lanczos | Lanczos |
+| Masks | box (area-weighted) | box (area-weighted) | bilinear |
+
+Box averaging is exact for whole-number reductions and can't ring; Lanczos
+keeps the most detail for other factors (results are clipped to 0–1). Masks
+only ever use filters that can't ring or overshoot. Exact halving of even
+sizes, the common case, averages 2×2 blocks directly.
 
 ## License
 

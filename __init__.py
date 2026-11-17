@@ -59,6 +59,19 @@ else:
     _NODES.append(ConfigureMaskAndReferenceGuideVideos)
     _NODES.append(BuildMaskAndReferenceGuideVideo)
 
+try:
+    from .image_scaling import (
+        LTXVHalveDimensions,
+        LTXVMatchImageOrMaskSize,
+        LTXVMatchImageSize,
+    )
+except ImportError as e:
+    LOG.error("LTXV Halve Dimensions and the Match Size nodes are unavailable: %s", e)
+else:
+    _NODES.append(LTXVHalveDimensions)
+    _NODES.append(LTXVMatchImageSize)
+    _NODES.append(LTXVMatchImageOrMaskSize)
+
 
 class _Extension(ComfyExtension):
     async def get_node_list(self):
